@@ -57,7 +57,7 @@ void cache_putip(uint32_t key, unsigned char *user, unsigned char *passwd)
     map_ip.map[id].passwd = pl->mystrdup(passwd);
 
     if (map_ip.elements >= (map_ip.size>>1)) {
-        fprintf(stderr, "%s: realloc from %lu to %lu\n", __func__, map_ip.size, map_ip.size<<1);
+        fprintf(stderr, "%s: map_ip realloc from %lu to %lu\n", __func__, map_ip.size, map_ip.size<<1);
         void *p = pl->myalloc(map_ip.size<<1 * sizeof(*map_ip.map));
         memset(p, 0, map_ip.size<<1 * sizeof(*map_ip.map));
         memmove(p, map_ip.map, map_ip.size * sizeof(*map_ip.map));
@@ -101,6 +101,7 @@ void cache_putapp(unsigned char *app, unsigned char *passwd)
     map_app.map[id].passwd = pl->mystrdup(passwd);
 
     if (map_app.elements >= (map_app.size>>1)) {
+        fprintf(stderr, "%s: map_app realloc from %lu to %lu\n", __func__, map_app.size, map_app.size<<1);
         void *p = pl->myalloc(map_app.size<<1 * sizeof(*map_app.map));
         memset(p, 0, map_app.size<<1 * sizeof(*map_app.map));
         memmove(p, map_app.map, map_app.size * sizeof(*map_app.map));

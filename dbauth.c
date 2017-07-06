@@ -1,6 +1,7 @@
 #include "structures.h"
 #include "db.h"
 #include <string.h>
+#include <assert.h>
 
 struct pluginlink *pl;
 static struct auth dbappauth;
@@ -34,10 +35,13 @@ static int dbappauthfunc(struct clientparam *param)
     unsigned char *endptr, *apppasswd;
     int usrlen;
 
+    if(!param->username || !param->password)
+        return 4;
+
     endptr = strchr(param->username, '-');
     if (!endptr) {
         fprintf(stderr, "error, can't extract app user, required format: appuser-xx.xx.xx.xx-xx:apppasswd, provided: %s\n", param->username);
-        return 1;
+        return 4;
     }
     usrlen = endptr - param->username;
     memcpy(appuser, param->username, usrlen);
