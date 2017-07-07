@@ -5,17 +5,15 @@
 #include "structures.h"
 #include "db.h"
 
-#define MAPIP_SIZE (1 << 16)
-#define MAPAPP_SIZE (1 << 10)
-
-struct map_ip2creds map_ip;
-struct map_app2pass map_app;
-
-#define idx_ipmap(n) (((size_t)(n)) % map_ip.size)
-#define idx_appmap(n) (((size_t)(n)) % map_app.size)
+#define DBG_CACHE 0
+#if DBG_CACHE
+#define dbg_cache(...) fprintf(stderr, __VA_ARGS__)
+#else
+#define dbg_cache(...)
+#endif
 
 /* Robert Jenkins' 32 bit integer hash function */
-uint32_t hash32(uint32_t a)
+static uint32_t hash32(uint32_t a)
 {
     a = (a+0x7ed55d16) + (a<<12);
     a = (a^0xc761c23c) ^ (a>>19);
@@ -27,7 +25,7 @@ uint32_t hash32(uint32_t a)
 }
 
 /* djb2 */
-unsigned long hashStr(unsigned char *str)
+static unsigned long hashStr(unsigned char *str)
 {
     unsigned long hash = 5381;
     int c;
@@ -38,109 +36,211 @@ unsigned long hashStr(unsigned char *str)
     return hash;
 }
 
-void cache_putip(uint32_t key, unsigned char *user, unsigned char *passwd)
+static int cache_resizeip(struct cache_ip *c, size_t newsize)
 {
-    pthread_mutex_lock(&map_ip.mux);
-    size_t id;
-    for (id = idx_ipmap(hash32(key)); map_ip.map[id].ipkey != 0; id = idx_ipmap(id+1))
-        if (map_ip.map[id].ipkey == key)
-            break;
+    dbg_cache("%s: from %lu to %lu\n", __func__, c->size, newsize);
+    struct cache_ip temp;
+    if (!cache_initip(&temp, newsize))
+        return 0;
 
-    if (map_ip.map[id].ipkey != 0) {
-        pl->myfree(map_ip.map[id].user);
-        pl->myfree(map_ip.map[id].passwd);
-    } else {
-        map_ip.elements++;
+    int i;
+    for (i = 0; i < c->size; i++) {
+        if (c->map[i].ipkey) {
+            cache_putip(&temp, c->map[i].ipkey, c->map[i].user, c->map[i].passwd);
+            pl->myfree(c->map[i].user);
+            pl->myfree(c->map[i].passwd);
+        }
     }
-    map_ip.map[id].ipkey = key;
-    map_ip.map[id].user = pl->mystrdup(user);
-    map_ip.map[id].passwd = pl->mystrdup(passwd);
+    pl->myfree(c->map);
+    c->elements = temp.elements;
+    c->size = temp.size;
+    c->map = temp.map;
 
-    if (map_ip.elements >= (map_ip.size>>1)) {
-        fprintf(stderr, "%s: map_ip realloc from %lu to %lu\n", __func__, map_ip.size, map_ip.size<<1);
-        void *p = pl->myalloc(map_ip.size<<1 * sizeof(*map_ip.map));
-        memset(p, 0, map_ip.size<<1 * sizeof(*map_ip.map));
-        memmove(p, map_ip.map, map_ip.size * sizeof(*map_ip.map));
-        pl->myfree(map_ip.map);
-        map_ip.map = p;
-        map_ip.size <<= 1;
-    }
-    pthread_mutex_unlock(&map_ip.mux);
+    return 1;
 }
 
-int cache_getip(uint32_t key, unsigned char **user, unsigned char **passwd)
+void cache_putip(struct cache_ip *c, uint32_t key, unsigned char *user, unsigned char *passwd)
 {
-    pthread_mutex_lock(&map_ip.mux);
+    pthread_mutex_lock(&c->mux);
+    if (c->elements >= c->size/2) {
+        if (!cache_resizeip(c, c->size*2)) {
+            pthread_mutex_unlock(&c->mux);
+            return;
+        }
+    }
+
     size_t id;
-    for (id = idx_ipmap(hash32(key)); map_ip.map[id].ipkey != 0; id = idx_ipmap(id+1))
-        if (map_ip.map[id].ipkey == key) {
-            *user = pl->mystrdup(map_ip.map[id].user);
-            *passwd = pl->mystrdup(map_ip.map[id].passwd);
-            pthread_mutex_unlock(&map_ip.mux);
+    for (id = hash32(key) % c->size; c->map[id].ipkey != 0; id = (id+1) % c->size)
+        if (c->map[id].ipkey == key)
+            break;
+
+    if (c->map[id].ipkey != 0) {
+        pl->myfree(c->map[id].user);
+        pl->myfree(c->map[id].passwd);
+    } else {
+        c->elements++;
+    }
+    c->map[id].ipkey = key;
+    c->map[id].user = pl->mystrdup(user);
+    c->map[id].passwd = pl->mystrdup(passwd);
+
+    dbg_cache("%s: size:%lu, elemnts:%lu, id:%lu, key:%u, val:{%s,%s}\n", __func__, c->size, c->elements, id, key, user, passwd);
+    pthread_mutex_unlock(&c->mux);
+}
+
+int cache_getip(struct cache_ip *c, uint32_t key, unsigned char **user, unsigned char **passwd)
+{
+    pthread_mutex_lock(&c->mux);
+#if DBG_CACHE
+    cache_printip(c);
+#endif
+    size_t id;
+    for (id = hash32(key) % c->size; c->map[id].ipkey != 0; id = (id+1) % c->size)
+        if (c->map[id].ipkey == key) {
+            *user = pl->mystrdup(c->map[id].user);
+            *passwd = pl->mystrdup(c->map[id].passwd);
+            dbg_cache("%s lookup success: size:%lu, elemnts:%lu, id:%lu, key:%u, val:{%s,%s}\n", __func__,
+                    c->size, c->elements, id, key, c->map[id].user, c->map[id].passwd);
+            pthread_mutex_unlock(&c->mux);
             return 1;
         }
-    pthread_mutex_unlock(&map_ip.mux);
+    dbg_cache("%s lookup fail: size:%lu, elemnts:%lu, id:%lu, key:%u, val:{%s,%s}\n", __func__,
+            c->size, c->elements, id, key, c->map[id].user, c->map[id].passwd);
+
+    pthread_mutex_unlock(&c->mux);
     return 0;
 }
 
-void cache_putapp(unsigned char *app, unsigned char *passwd)
+static int cache_resizeapp(struct cache_ap *c, size_t newsize)
 {
-    pthread_mutex_lock(&map_app.mux);
-    unsigned long hash = hashStr(app);
+    dbg_cache("%s: from %lu to %lu\n", __func__, c->size, newsize);
+    struct cache_ap temp;
+    if (!cache_initapp(&temp, newsize))
+        return 0;
+
+    int i;
+    for (i = 0; i < c->size; i++) {
+        if (c->map[i].appkey) {
+            cache_putapp_hash(&temp, c->map[i].appkey, c->map[i].passwd);
+            pl->myfree(c->map[i].passwd);
+        }
+    }
+    pl->myfree(c->map);
+    c->elements = temp.elements;
+    c->size = temp.size;
+    c->map = temp.map;
+
+    return 1;
+}
+
+static void cache_putapp_hash(struct cache_ap *c, unsigned long hash, unsigned char *passwd)
+{
     size_t id;
-    for (id = idx_appmap(hash); map_app.map[id].appkey != 0; id = idx_appmap(id+1))
-        if (map_app.map[id].appkey == hash)
+    for (id = hash % c->size; c->map[id].appkey != 0; id = (id+1) % c->size)
+        if (c->map[id].appkey == hash)
             break;
     
-    if (map_app.map[id].appkey != 0) {
-        pl->myfree(map_app.map[id].passwd);
+    if (c->map[id].appkey != 0) {
+        pl->myfree(c->map[id].passwd);
     } else {
-        map_app.elements++;
+        c->elements++;
     }
-    map_app.map[id].appkey = hash;
-    map_app.map[id].passwd = pl->mystrdup(passwd);
+    c->map[id].appkey = hash;
+    c->map[id].passwd = pl->mystrdup(passwd);
 
-    if (map_app.elements >= (map_app.size>>1)) {
-        fprintf(stderr, "%s: map_app realloc from %lu to %lu\n", __func__, map_app.size, map_app.size<<1);
-        void *p = pl->myalloc(map_app.size<<1 * sizeof(*map_app.map));
-        memset(p, 0, map_app.size<<1 * sizeof(*map_app.map));
-        memmove(p, map_app.map, map_app.size * sizeof(*map_app.map));
-        pl->myfree(map_app.map);
-        map_app.map = p;
-        map_app.size <<= 1;
+    dbg_cache("%s: size:%lu, elemnts:%lu, id:%lu, key:{%lu}, val:%s\n", __func__, c->size, c->elements, id, hash, passwd);
+
+}
+void cache_putapp(struct cache_ap *c, unsigned char *app, unsigned char *passwd)
+{
+    pthread_mutex_lock(&c->mux);
+    if (c->elements >= c->size/2) {
+        if (!cache_resizeapp(c, c->size*2)) {
+            pthread_mutex_unlock(&c->mux);
+            return;
+        }
     }
-    pthread_mutex_unlock(&map_app.mux);
+
+    unsigned long hash = hashStr(app);
+    cache_putapp_hash(c, hash, passwd);
+
+    pthread_mutex_unlock(&c->mux);
 }
 
-int cache_getapp(unsigned char *app, unsigned char **passwd)
+int cache_getapp(struct cache_ap *c, unsigned char *app, unsigned char **passwd)
 {
-    pthread_mutex_lock(&map_app.mux);
+    pthread_mutex_lock(&c->mux);
+#if DBG_CACHE
+    cache_printapp(c);
+#endif
     unsigned long hash = hashStr(app);
     size_t id;
-    for (id = idx_appmap(hash); map_app.map[id].appkey != 0; id = idx_appmap(id+1))
-        if (map_app.map[id].appkey == hash) {
-            *passwd = pl->mystrdup(map_app.map[id].passwd);
-            pthread_mutex_unlock(&map_app.mux);
+    for (id = hash % c->size; c->map[id].appkey != 0; id = (id+1) % c->size)
+        if (c->map[id].appkey == hash) {
+            *passwd = pl->mystrdup(c->map[id].passwd);
+            dbg_cache("%s lookup success: size:%lu, elemnts:%lu, id:%lu, key:{%lu,%s}, val:%s\n", __func__,
+                    c->size, c->elements, id, hash, app, c->map[id].passwd);
+            pthread_mutex_unlock(&c->mux);
             return 1;
         }
-    pthread_mutex_unlock(&map_app.mux);
+    dbg_cache("%s lookup fail: size:%lu, elemnts:%lu, id:%lu, key:{%lu,%s}, val:%s\n", __func__,
+            c->size, c->elements, id, hash, app, c->map[id].passwd);
+    pthread_mutex_unlock(&c->mux);
     return 0;
 }
 
-int cache_ipinit(struct map_ip2creds *map)
+int cache_initip(struct cache_ip *c, size_t initsize)
 {
-    map->elements = 0;
-    map->size = MAPIP_SIZE;
-    map->map = pl->myalloc(map->size * sizeof(*map->map));
-    memset(map->map, 0, map->size * sizeof(*map->map));
-    pthread_mutex_init(&map->mux, NULL);
+    if (initsize < 1){
+        fprintf(stderr, "%s: cache_ip init size should be >= 1, provided size: %lu\n", __func__, initsize);
+        return 0;
+    }
+    c->elements = 0;
+    c->size = initsize;
+    c->map = pl->myalloc(initsize * sizeof(*c->map));
+    if (!c->map) {
+        fprintf(stderr, "%s: oom can't alloc", __func__);
+        return 0;
+    }
+    memset(c->map, 0, c->size * sizeof(*c->map));
+    pthread_mutex_init(&c->mux, NULL);
+    return 1;
 }
 
-int cache_appinit(struct map_app2pass *map)
+int cache_initapp(struct cache_ap *c, size_t initsize)
 {
-    map->elements = 0;
-    map->size = MAPAPP_SIZE;
-    map->map = pl->myalloc(map->size * sizeof(*map->map));
-    memset(map->map, 0, map->size * sizeof(*map->map));
-    pthread_mutex_init(&map->mux, NULL);
+    if (initsize < 1) {
+        fprintf(stderr, "%s: cache_ap init size should be >= 1, provided size: %lu\n", __func__, initsize);
+        return 0;
+    }
+    c->elements = 0;
+    c->size = initsize;
+    c->map = pl->myalloc(c->size * sizeof(*c->map));
+    if (!c->map) {
+        fprintf(stderr, "%s: oom can't alloc", __func__);
+        return 0;
+    }
+    memset(c->map, 0, initsize * sizeof(*c->map));
+    pthread_mutex_init(&c->mux, NULL);
+    return 1;
+}
+
+static void cache_printip(struct cache_ip *c)
+{
+    int i;
+    printf("cache_ip.size: %lu\n", c->size);
+    printf("cache_ip.elements: %lu\n", c->elements);
+    for (i=0; i < c->size; i++){
+        printf("%d: key:%u, val:{%s,%s}\n", i, c->map[i].ipkey, c->map[i].user, c->map[i].passwd);
+    }
+}
+
+static void cache_printapp(struct cache_ap *c)
+{
+    int i;
+    printf("cache_app.size: %lu\n", c->size);
+    printf("cache_app.elements: %lu\n", c->elements);
+    for(i=0; i < c->size; i++){
+        printf("%d: key:%lu, val:%s\n", i, c->map[i].appkey, c->map[i].passwd);
+    }
 }

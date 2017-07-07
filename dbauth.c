@@ -2,10 +2,13 @@
 #include "db.h"
 #include <string.h>
 #include <assert.h>
+#include <stdlib.h>
 
 struct pluginlink *pl;
 static struct auth dbappauth;
 static char plugname[] = "DBManagerPlugin";
+static struct cache_ip cacheip;
+static struct cache_ap cacheapp;
 
 int (*redirfunc)(struct clientparam * param, struct ace * acentry);
 
@@ -47,12 +50,12 @@ static int dbappauthfunc(struct clientparam *param)
     memcpy(appuser, param->username, usrlen);
     appuser[usrlen] = 0;
 
-    if (!cache_getapp(appuser, &apppasswd)) {
+    if (!cache_getapp(&cacheapp, appuser, &apppasswd)) {
         if ((apppasswd = sqlget_apppasswd(appuser)) == NULL) {
             fprintf(stderr, "unable to dbget app passwd for user: %s\n", appuser);
             return 5;
         }
-        cache_putapp(appuser, apppasswd);
+        cache_putapp(&cacheapp, appuser, apppasswd);
     }
 
     if (strcmp(param->password, apppasswd) != 0) {
@@ -117,12 +120,12 @@ static int checkACLandRedir(struct clientparam *param)
 
     /* get user/passwd for chainip:chainport proxy from db */
     proxyip = ntohl(((struct sockaddr_in *)&nextchain.addr)->sin_addr.s_addr);
-    if (!cache_getip(proxyip, &proxyuser, &proxypasswd)) {
+    if (!cache_getip(&cacheip, proxyip, &proxyuser, &proxypasswd)) {
         if (sqlget_proxycreds(&proxyuser, &proxypasswd, proxyip, proxyport, 1) == -1) {
             fprintf(stderr, "unable to dbget user/passwd for the given proxy server: %s:%d", chainip, proxyport);
             return 5;
         }
-        cache_putip(proxyip, proxyuser, proxypasswd);
+        cache_putip(&cacheip, proxyip, proxyuser, proxypasswd);
     }
     nextchain.extuser = proxyuser;
     nextchain.extpass = proxypasswd;
@@ -137,12 +140,25 @@ static int checkACLandRedir(struct clientparam *param)
 
 PLUGINAPI int PLUGINCALL start(struct pluginlink * pluginlink, int argc, unsigned char** argv)
 {
-    if (argc != 2) {
-        fprintf(stderr, "%s, usage: plugin /path/to/DBManagerPlugin.ld.so start odbcsource,user,passwd\n", plugname);
+    char *err;
+    size_t map_ip_initsize, map_app_initsize;
+
+    if (argc != 4) {
+        fprintf(stderr, "%s, usage: plugin /path/to/DBManagerPlugin.ld.so start odbcsource,user,passwd initsize_ipcache initsize_appcache\n", plugname);
         return 1;
     }
     if (sqlinit(argv[1]) == -1) {
-        fprintf(stderr, "%s, can't initialize database, provided db info: %s\n", plugname, argv[1]);
+        fprintf(stderr, "%s, can't initialize database odbc source %s\n", plugname, argv[1]);
+        return 1;
+    }
+    map_ip_initsize = strtol(argv[2], &err, 10);
+    if (*err) {
+        fprintf(stderr, "%s, can't convert %s to a number\n", plugname, argv[2]);
+        return 1;
+    }
+    map_app_initsize = strtol(argv[3], &err, 10);
+    if (*err) {
+        fprintf(stderr, "%s, can't convert %s to a number\n", plugname, argv[3]);
         return 1;
     }
 
@@ -154,8 +170,11 @@ PLUGINAPI int PLUGINCALL start(struct pluginlink * pluginlink, int argc, unsigne
     dbappauth.next = pl->authfuncs->next;
     pl->authfuncs->next = &dbappauth;
     redirfunc = pl->findbyname("handleredirect");
-    cache_ipinit(&map_ip);
-    cache_appinit(&map_app);
+
+    if (!cache_initip(&cacheip, map_ip_initsize))
+        return 1;
+    if (!cache_initapp(&cacheapp, map_app_initsize))
+        return 1;
 
     return 0;
 }
