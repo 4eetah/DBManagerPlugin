@@ -77,7 +77,7 @@ static int checkACLandRedir(struct clientparam *param)
     unsigned int proxyip;
     unsigned short proxyport;
 
-    /* Check ACL */ 
+    /* Check ACL */
     ret = pl->checkACL(param);
     if (ret != 0)
         return ret;
@@ -103,7 +103,6 @@ static int checkACLandRedir(struct clientparam *param)
     /* fill int next chain */
     nextchain.weight = 1000;
     nextchain.exthost = chainip;
-    nextchain.type = R_SOCKS5;
 
     /* we can pull out family from database to support ipv4/ipv6 */
     *SAFAMILY(&nextchain.addr) = AF_INET;
@@ -117,6 +116,12 @@ static int checkACLandRedir(struct clientparam *param)
         return 3;
     }
     *SAPORT(&nextchain.addr) = htons(proxyport);
+
+    /* pull out protocol from a database ?*/
+    if (proxyport == 1080)
+        nextchain.type = R_SOCKS5;
+    else
+        nextchain.type = R_CONNECT;
 
     /* get user/passwd for chainip:chainport proxy from db */
     proxyip = ntohl(((struct sockaddr_in *)&nextchain.addr)->sin_addr.s_addr);
