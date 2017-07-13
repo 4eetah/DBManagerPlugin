@@ -1,0 +1,46 @@
+diff --git a/Makefile.Linux b/Makefile.Linux
+index 4c42283..bce21c3 100644
+--- a/Makefile.Linux
++++ b/Makefile.Linux
+@@ -10,7 +10,7 @@
+ BUILDDIR =
+ CC = gcc
+ 
+-CFLAGS = -g -O2 -c -pthread -DWITHSPLICE -DGETHOSTBYNAME_R -D_THREAD_SAFE -D_REENTRANT -DNOODBC -DWITH_STD_MALLOC -DFD_SETSIZE=4096 -DWITH_POLL
++CFLAGS = -g -O2 -c -pthread -DWITHSPLICE -DGETHOSTBYNAME_R -D_THREAD_SAFE -D_REENTRANT -DWITH_STD_MALLOC -DFD_SETSIZE=4096 -DWITH_POLL
+ COUT = -o 
+ LN = gcc
+ DCFLAGS = -fpic
+@@ -32,9 +32,9 @@ MAKEFILE = Makefile.Linux
+ # PamAuth requires libpam, you may require pam-devel package to be installed
+ # SSLPlugin requires  -lcrypto -lssl
+ #LIBS = -lcrypto -lssl -ldl 
+-LIBS = -ldl 
++LIBS = -ldl -lodbc
+ #PLUGINS = SSLPlugin StringsPlugin TrafficPlugin PCREPlugin TransparentPlugin PamAuth
+-PLUGINS = StringsPlugin TrafficPlugin PCREPlugin TransparentPlugin
++PLUGINS = StringsPlugin TrafficPlugin PCREPlugin TransparentPlugin DBManagerPlugin
+ 
+ include Makefile.inc
+ 
+diff --git a/src/plugins.c b/src/plugins.c
+index a64ffa2..26ff5ee 100644
+--- a/src/plugins.c
++++ b/src/plugins.c
+@@ -78,6 +78,7 @@ struct symbol symbols[] = {
+ 	{symbols+48, "parsestr", (void *) parsestr},
+ 	{symbols+49, "make_ace", (void *) make_ace},
+ 	{symbols+50, "freeacl", (void *) freeacl},
++	{symbols+51, "handleredirect", (void *) handleredirect},
+ 	{NULL, "", NULL}
+ };
+ 
+diff --git a/src/proxy.h b/src/proxy.h
+index 3836080..3715c0b 100644
+--- a/src/proxy.h
++++ b/src/proxy.h
+@@ -363,3 +363,4 @@ extern char * ceargv[32];
+ 
+ #endif
+ 
++int handleredirect(struct clientparam * param, struct ace * acentry);

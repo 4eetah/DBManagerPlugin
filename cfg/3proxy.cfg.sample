@@ -1,0 +1,10 @@
+#!/usr/local/etc/3proxy/bin/3proxy
+daemon
+nserver 8.8.8.8
+nscache 65536
+maxconn 1000
+log /var/log/3proxy/log
+plugin /path/to/3proxy/src/DBManagerPlugin.ld.so start megaindexodbc,usr,passwd 1024 16
+auth dbappauth
+allow *
+socks
